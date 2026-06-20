@@ -469,32 +469,54 @@ searches a handful of aim lines. Deterministic (seeded, common random
 numbers), so the same hole always gives the same advice.
 
 ```bash
-python -m scratch strategy tee --length 410 --par 4 --ob-right 24
-python -m scratch strategy tee --length 410 --fairway-width 28 \
-    --ob-right 24 --forced-carry 220
-python -m scratch strategy approach --distance 150
+scratch strategy tee --length 410 --par 4 --ob-right 24
+scratch strategy tee --course "Pebble Dunes" --hole 1      # from your course book
+scratch strategy round --course "Pebble Dunes"             # plan the whole course
+scratch strategy approach --distance 150
 ```
 ```
 Tee strategy — par 4, 410 yds
-  fairway 32 yds wide; OB/penalty 24 yds right
-
    #  Club          Aim    Exp  Fairway  Penalty  Leave
-  -----------------------------------------------------
    1  Driver         5L   4.04      87%       1%    146
    2  3W            ctr   4.10      99%       0%    170
-   3  5W            ctr   4.21     100%       0%    186
-   4  7I            ctr   4.49      91%       1%    256
-
 Recommended: Driver, aim 5 yds left (expected 4.04, 146 yd leave).
 ```
 
-Hole inputs: `--length` (to pin), `--par`, `--fairway-width`, optional
-`--ob-left` / `--ob-right` (yards from center where penalty starts), and
-`--forced-carry` (water/waste you must clear). `Aim` already bakes in your
-miss bias — `5L` for a player who leaks right keeps the ball off the right
-OB. `strategy approach --distance D` picks the shortest club that still
-reliably carries the pin and shows your full club ladder. Engine:
-`scratch/strategy_model.py`.
+`Aim` already bakes in your miss bias — `5L` for a player who leaks right
+keeps the ball off the right OB. Hole inputs: `--length`, `--par`,
+`--fairway-width`, `--ob-left` / `--ob-right` (yards from center where
+penalty starts), `--forced-carry` — or load them from a saved hole with
+`--course`/`--hole`.
+
+**`strategy round`** plays the whole course book at once — best club + aim
+for every saved hole, expected score vs par, and the holes where trouble is
+in play:
+
+```
+Game plan — Pebble Dunes
+
+   #  Par   Yds  Play            Exp   Pen
+   1    4   410  Driver 5L      4.04    1%
+   2    3   175  7I ctr         3.28    0%
+   4    5   540  3W ctr         4.45    0%
+  Expected 15.8 vs par 16  (-0.2 to par)
+
+  Risk holes (trouble in play — respect them):
+    #1  Driver 5L, penalty 1% — Right is OB
+```
+
+**`strategy approach --distance D`** picks the club, then simulates the shot
+through your dispersion to report **expected proximity**, **green-in-regulation
+%**, and your **typical miss** (so you can favor the safe side):
+
+```
+Approach — 150 yds to the pin (green ~18 yds wide)
+Play: 7I  (carries 154, reliable 150) — reaches without over-swinging
+  Expected proximity 10 yds   ·   green in regulation 50%
+  Typical miss: 4 yds long, center.
+```
+
+Engine: `scratch/strategy_model.py`.
 
 ### Course book / notes (built — Phase 2)
 

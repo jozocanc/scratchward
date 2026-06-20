@@ -2,9 +2,12 @@
 
 * ``strategy tee``      recommend club + aim off a tee to minimize expected
                         score, given the hole and your real club dispersion.
-* ``strategy approach`` quick club pick for a given distance to the pin.
+* ``strategy round``    a full game plan for a saved course — best club/aim
+                        per hole, expected score vs par, and the risk holes.
+* ``strategy approach`` for a distance to the pin: club, expected proximity,
+                        green-in-regulation %, and your typical miss.
 
-Both read the per-club distances/dispersion logged via ``dispersion``; the
+All read the per-club distances/dispersion logged via ``dispersion``; the
 expected-score math lives in ``scratch.strategy_model`` (pure).
 """
 
@@ -13,8 +16,8 @@ from __future__ import annotations
 import argparse
 
 from .. import db
-from ..strategy_model import recommend
-from .course import load_hole
+from ..strategy_model import recommend, simulate_approach
+from .course import get_course, load_hole
 from .dispersion import club_stats, _pretty_club
 
 
@@ -40,8 +43,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                      help="Must-carry distance (water/waste short of landing)")
     tee.set_defaults(func=run_tee)
 
-    ap = sub.add_parser("approach", help="Club pick for a distance to the pin")
+    rnd = sub.add_parser("round", help="Full game plan for a saved course")
+    rnd.add_argument("--course", required=True, help="Course name from your course book")
+    rnd.set_defaults(func=run_round)
+
+    ap = sub.add_parser("approach",
+                        help="Club + expected proximity/GIR for a distance")
     ap.add_argument("--distance", type=float, required=True, help="Yards to pin")
+    ap.add_argument("--green-radius", type=float, default=9.0,
+                    help="Half the green's effective width in yards (default 9)")
     ap.set_defaults(func=run_approach)
 
 
@@ -65,7 +75,7 @@ def _aim_str(aim: float) -> str:
 
 def _no_data() -> int:
     print("No club dispersion logged yet — strategy needs your real distances.")
-    print("Log some first:  python -m scratch dispersion log")
+    print("Log some first:  scratch dispersion log")
     return 1
 
 
@@ -158,6 +168,67 @@ def run_tee(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# strategy round — full game plan from the course book
+# --------------------------------------------------------------------------- #
+def _aim_abbr(aim) -> str:
+    return f"{abs(aim):.0f}{'R' if aim > 0 else 'L'}" if aim else "ctr"
+
+
+def run_round(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    clubs = _load_clubs(conn)
+    if not clubs:
+        return _no_data()
+    course = get_course(conn, args.course)
+    if course is None:
+        raise SystemExit(f"error: no course named {args.course!r} "
+                         "(add holes with `course hole`)")
+    holes = conn.execute(
+        "SELECT * FROM course_holes WHERE course_id = ? AND length IS NOT NULL "
+        "ORDER BY hole", (course["id"],)).fetchall()
+    if not holes:
+        print(f"{course['name']} has no holes with a length saved yet. Add them "
+              "with: course hole --course ... --hole N --par 4 --length 410")
+        return 0
+
+    print(f"Game plan — {course['name']}\n")
+    header = f"  {'#':>2}  {'Par':>3}  {'Yds':>4}  {'Play':<13} {'Exp':>5}  {'Pen':>4}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    total_exp = 0.0
+    total_par = 0
+    plays = []
+    for h in holes:
+        hole = {"length": h["length"],
+                "fairway_half": (h["fairway_width"] or 32.0) / 2.0,
+                "ob_left": h["ob_left"], "ob_right": h["ob_right"],
+                "forced_carry": h["forced_carry"]}
+        best = recommend(clubs, hole)[0]
+        play = f"{_pretty_club(best['club'])} {_aim_abbr(best['aim'])}"
+        par = h["par"] or 0
+        total_exp += best["expected"]
+        total_par += par
+        plays.append((h, best))
+        print(f"  {h['hole']:>2}  {par:>3}  {h['length']:>4.0f}  {play:<13} "
+              f"{best['expected']:>5.2f}  {best['penalty_rate'] * 100:>3.0f}%")
+    print("  " + "-" * (len(header) - 2))
+    diff = total_exp - total_par
+    print(f"  Expected {total_exp:.1f} vs par {total_par}  ({diff:+.1f} to par)")
+
+    risky = [(h, b) for h, b in plays if b["penalty_rate"] >= 0.03]
+    risky.sort(key=lambda p: -p[1]["penalty_rate"])
+    if risky:
+        print("\n  Risk holes (trouble in play — respect them):")
+        for h, b in risky[:3]:
+            note = f" — {h['note']}" if h["note"] else ""
+            print(f"    #{h['hole']:<2} {_pretty_club(b['club'])} {_aim_abbr(b['aim'])}, "
+                  f"penalty {b['penalty_rate'] * 100:.0f}%{note}")
+    else:
+        print("\n  No high-risk tee shots — play your stock shapes and stay patient.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # strategy approach
 # --------------------------------------------------------------------------- #
 def run_approach(args: argparse.Namespace) -> int:
@@ -167,24 +238,35 @@ def run_approach(args: argparse.Namespace) -> int:
         return _no_data()
 
     d = args.distance
-    # Prefer the shortest club whose reliable carry still reaches the pin
-    # (carry the front), else the longest club available.
+    gr = args.green_radius
     reaching = [(c, s) for c, s in clubs.items() if s["reliable"] >= d]
-    print(f"Approach — {d:.0f} yds to the pin\n")
     if reaching:
         club, s = min(reaching, key=lambda cs: cs[1]["reliable"])
-        print(f"Play: {_pretty_club(club)}  "
-              f"(reliable {s['reliable']:.0f}, avg {s['mean']:.0f} yds)")
-        print(f"  Reaches {d:.0f} most of the time without over-swinging.")
+        pick_note = "reaches without over-swinging"
     else:
         club, s = max(clubs.items(), key=lambda cs: cs[1]["reliable"])
-        print(f"Play: {_pretty_club(club)}  (your longest — reliable {s['reliable']:.0f} yds)")
-        print(f"  {d:.0f} is past your reliable carry; expect to come up short — "
-              f"aim for the front and take your medicine.")
-    # Show the neighbors for context.
+        pick_note = "your longest — expect to come up short"
+
+    sim = simulate_approach(s, d, gr)
+    print(f"Approach — {d:.0f} yds to the pin (green ~{gr * 2:.0f} yds wide)\n")
+    print(f"Play: {_pretty_club(club)}  (carries {s['mean']:.0f}, reliable "
+          f"{s['reliable']:.0f}) — {pick_note}")
+    print(f"  Expected proximity {sim['proximity']:.0f} yds   ·   "
+          f"green in regulation {sim['gir'] * 100:.0f}%")
+
+    lb, sb = sim["long_bias"], sim["side_bias"]
+    long_word = (f"{abs(lb):.0f} yds {'long' if lb > 0 else 'short'}"
+                 if abs(lb) >= 1 else "pin-high")
+    side_word = (f"{abs(sb):.0f} yds {'right' if sb > 0 else 'left'}"
+                 if abs(sb) >= 1 else "center")
+    print(f"  Typical miss: {long_word}, {side_word}.")
+    if abs(sb) >= 2:
+        print(f"  -> You leak {'right' if sb > 0 else 'left'} — favor the "
+              f"{'left' if sb > 0 else 'right'} half / fat of the green.")
+
     ladder = sorted(clubs.items(), key=lambda cs: cs[1]["reliable"], reverse=True)
     print("\n  Your ladder (reliable carry):")
-    for c, s in ladder:
+    for c, s2 in ladder:
         mark = "  <-" if c == club else ""
-        print(f"    {_pretty_club(c):<8} {s['reliable']:>4.0f} yds{mark}")
+        print(f"    {_pretty_club(c):<8} {s2['reliable']:>4.0f} yds{mark}")
     return 0

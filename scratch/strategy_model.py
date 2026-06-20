@@ -111,3 +111,36 @@ def recommend(clubs: dict, hole: dict, seed: int = 42, n: int = N_SAMPLES) -> li
         results.append(dict(best, club=name))
     results.sort(key=lambda r: r["expected"])
     return results
+
+
+def simulate_approach(stat: dict, distance: float, green_radius: float = 9.0,
+                      seed: int = 42, n: int = N_SAMPLES) -> dict:
+    """Where an approach with `stat` finishes relative to a pin `distance` away.
+
+    Models the club's carry spread and lateral spread (plus the player's miss
+    bias) and reports expected proximity, green-in-regulation rate, and the
+    average long/short and left/right miss. `green_radius` is half the green's
+    effective width in yards.
+    """
+    samples = make_samples(n, seed)
+    mean, long_std, lat_std, bias = _dispersion(stat)
+    prox = []
+    gir = 0
+    long_sum = 0.0
+    side_sum = 0.0
+    for z_long, z_lat in samples:
+        d_long = (mean + z_long * long_std) - distance   # + long / - short
+        lat = bias + z_lat * lat_std                      # + right / - left
+        prox.append(math.hypot(d_long, lat))
+        long_sum += d_long
+        side_sum += lat
+        if prox[-1] <= green_radius:
+            gir += 1
+    prox.sort()
+    return {
+        "proximity": sum(prox) / n,
+        "median": prox[n // 2],
+        "gir": gir / n,
+        "long_bias": long_sum / n,
+        "side_bias": side_sum / n,
+    }
