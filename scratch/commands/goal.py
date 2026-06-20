@@ -181,6 +181,29 @@ def _milestones(start, target):
     return ms
 
 
+def category_targets(conn, days=90):
+    """Per-category strokes the active goal needs, for the trainer to aim at.
+
+    Returns (target_value, target_date, gap, {cat: improve_per_round}) for the
+    active handicap goal, or None if there's no goal or no measurable Index.
+    The dict is empty when the goal is already reached or no leaks are logged.
+    """
+    goal = _active_goal(conn)
+    if goal is None:
+        return None
+    current = compute_handicap_index(_differentials(_rounds(conn)))
+    if current is None:
+        return None
+    gap = round(current["index"] - goal["target_value"], 1)
+    targets: dict = {}
+    if gap > 0:
+        leaks = {c: per for c, per in _recent_sg(conn, days).items() if per < 0}
+        total = sum(abs(v) for v in leaks.values())
+        if total > 0:
+            targets = {c: gap * (abs(per) / total) for c, per in leaks.items()}
+    return (goal["target_value"], goal["target_date"], gap, targets)
+
+
 # --------------------------------------------------------------------------- #
 # goal set / clear
 # --------------------------------------------------------------------------- #

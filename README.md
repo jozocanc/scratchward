@@ -293,18 +293,31 @@ python -m scratch train --minutes 30    # tighter session
 python -m scratch train --days 60       # SG window for leaks
 ```
 
-Priority order (per the spec):
+Priority order:
 
+0. **Goal targets** — if you've set a handicap goal, the plan aims at
+   exactly what it needs (biggest required category gain first) and is
+   framed around reaching it
 1. **Strokes-gained leaks** — worst category first (from `sg`)
 2. **Swing faults** — from your latest `analyze` runs
 3. **Handicap trend** — direction + level (from `round`); also drives a
    sensible default if you have rounds but no shots/swings logged
 
 It selects from the built-in drill library (each drill tagged with the SG
-category and/or fault it addresses), allocates breadth-first so every leak
+category and/or fault it addresses), allocates breadth-first so every need
 gets a drill before any gets a second, picks the drill most *specific* to
 each need, fits everything to `--minutes`, and adds a fault-matched
-warm-up. Sample:
+warm-up. With an active goal it reads like:
+
+```
+Built from: your handicap goal, strokes gained (last 90 days), handicap trend.
+
+Goal: reach 9.0 — need ~3.7 more strokes/round. This plan targets it.
+...
+Priority 1 — Approach — gain +2.3/round toward your goal
+```
+
+Without a goal it falls back to raw-leak framing:
 
 ```
 Your training plan — 60 min target

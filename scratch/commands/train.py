@@ -1,8 +1,10 @@
 """``train`` — personalized practice + mobility routine. Fully implemented.
 
 This is the capstone that ties the tool together. It reads your real data
-in the priority order from the spec:
+in priority order:
 
+    0. goal targets           (if a handicap goal is set — aim at exactly
+                               what it needs, biggest required gain first)
     1. strokes-gained leaks   (shots table — worst category first)
     2. swing-analysis faults  (swing_analyses table — most recent)
     3. handicap trend         (rounds table — direction + level)
@@ -21,6 +23,7 @@ import json
 from .. import db
 from ..constants import SG_CATEGORIES
 from ..data.drills import DRILLS, MOBILITY
+from .goal import category_targets
 from .handicap import compute_handicap_index
 
 # A category is a "leak" once it's costing more than this per round.
@@ -122,6 +125,8 @@ def run(args: argparse.Namespace) -> int:
     sg = _sg_by_category(conn, args.days)
     faults = _recent_faults(conn)
     hcp, trend = _handicap_and_trend(conn)
+    goal_info = category_targets(conn, args.days)  # (target, date, gap, {cat: gain}) or None
+    goal_targets = goal_info[3] if goal_info else {}
 
     if not sg and not faults and hcp is None:
         print("Not enough data yet to build a tailored plan.")
@@ -132,23 +137,31 @@ def run(args: argparse.Namespace) -> int:
             print(f"  • {d['name']} — {d['minutes']} min")
         return 0
 
-    # Build the priority-ordered list of needs.
+    # Build the priority-ordered list of needs. With an active handicap goal,
+    # aim at exactly what the goal needs (biggest required gain first);
+    # otherwise fall back to raw strokes-gained leaks.
     needs = []  # (kind, key, info)
-    leaks = sorted(
-        ((c, per) for c, (per, _n) in sg.items() if per < LEAK_THRESHOLD),
-        key=lambda x: x[1],  # most negative first
-    )
-    for cat, per in leaks:
-        needs.append(("sg", cat, per))
-    for tag, count in faults:
-        needs.append(("fault", tag, count))
-    if not needs and hcp is not None:
-        idx = hcp["index"]
-        cats = (["short-game", "putting", "approach"] if idx >= 20
-                else ["approach", "short-game", "putting"] if idx >= 10
-                else ["approach", "putting"])
-        for c in cats:
-            needs.append(("hcp", c, idx))
+    if goal_targets:
+        for cat in sorted(goal_targets, key=lambda c: -goal_targets[c]):
+            needs.append(("goal", cat, goal_targets[cat]))
+        for tag, count in faults:
+            needs.append(("fault", tag, count))
+    else:
+        leaks = sorted(
+            ((c, per) for c, (per, _n) in sg.items() if per < LEAK_THRESHOLD),
+            key=lambda x: x[1],  # most negative first
+        )
+        for cat, per in leaks:
+            needs.append(("sg", cat, per))
+        for tag, count in faults:
+            needs.append(("fault", tag, count))
+        if not needs and hcp is not None:
+            idx = hcp["index"]
+            cats = (["short-game", "putting", "approach"] if idx >= 20
+                    else ["approach", "short-game", "putting"] if idx >= 10
+                    else ["approach", "putting"])
+            for c in cats:
+                needs.append(("hcp", c, idx))
 
     fault_tags = [t for t, _ in faults]
     budget = args.minutes
@@ -159,7 +172,7 @@ def run(args: argparse.Namespace) -> int:
 
     def candidates(need):
         kind, key, _ = need
-        if kind in ("sg", "hcp"):
+        if kind in ("sg", "hcp", "goal"):
             cand = _drills_for_category(key)
             # Most specific first: category is the drill's primary tag, then
             # fewer categories overall, then shorter.
@@ -198,6 +211,8 @@ def run(args: argparse.Namespace) -> int:
     # ----- render -----
     print(f"Your training plan — {args.minutes} min target")
     sources = []
+    if goal_targets:
+        sources.append("your handicap goal")
     if sg:
         sources.append(f"strokes gained (last {args.days} days)")
     if faults:
@@ -206,17 +221,25 @@ def run(args: argparse.Namespace) -> int:
         sources.append("handicap trend")
     print(f"Built from: {', '.join(sources) if sources else 'starter defaults'}.\n")
 
+    if goal_info and goal_info[2] > 0:
+        target, target_date, gap, _ = goal_info
+        by = f" by {target_date}" if target_date else ""
+        print(f"Goal: reach {target:.1f}{by} — need ~{gap:.1f} more strokes/round. "
+              f"This plan targets it.")
     if hcp is not None:
         line = f"Handicap Index: {hcp['index']:.1f}"
         if trend is not None:
             direction = ("trending down" if trend < -0.1 else
                          "trending up" if trend > 0.1 else "holding steady")
             line += f"  ({direction} {trend:+.1f} vs your prior rounds)"
-        print(line + "\n")
+        print(line)
+    print()
 
     for i, (need, drills) in enumerate(blocks, 1):
         kind, key, info = need
-        if kind == "sg":
+        if kind == "goal":
+            reason = f"{_pretty(key)} — gain {info:+.1f}/round toward your goal"
+        elif kind == "sg":
             reason = f"{_pretty(key)} — losing {abs(info):.1f} shots/round"
         elif kind == "fault":
             reason = f"{_pretty(key)} — flagged by swing analysis"
