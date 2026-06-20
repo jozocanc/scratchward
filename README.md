@@ -205,30 +205,51 @@ strokes gained in a category **before** you started practicing it vs
 
 ```bash
 # Tag the focus to an SG category so it can be scored against results
-python -m scratch practice add --focus approach --drills "wedge ladder" --duration 45
-python -m scratch practice add --focus putting --duration 30 --date 2026-06-15
-python -m scratch practice list
+scratch practice add --focus approach --drills "wedge ladder" --duration 45
+scratch practice list
 
-# The feedback loop
-python -m scratch practice progress              # every focus you've practiced
-python -m scratch practice progress --focus approach
-python -m scratch practice progress --window 14  # only rounds within 14 days each side
+# The feedback loop — did the work move the needle?
+scratch practice progress              # every focus you've practiced
+scratch practice progress --focus approach
+scratch practice progress --window 14  # only rounds within 14 days each side
+
+# The dashboard — volume, consistency, and effort vs need
+scratch practice summary
 ```
 ```
 Practice -> results feedback loop
 
 approach   (3 session(s), 135 min, since 2026-05-20)
-  drills: wedge ladder
   SG/round before: -2.90 (6 rd)     since: -1.40 (4 rd)     ^ improved +1.50
   -> The work is paying off. Keep going.
 ```
 
 The "before" baseline is your SG in that category from rounds dated
 before your first session on it; "since" is rounds played from that date
-on. `--window N` limits both sides to N days around the start. A focus
-that isn't an SG category (e.g. a swing-fault tag like `head-sway`) is
-still logged and counted, but can't be scored against strokes gained —
-the report says so and points you to the four categories.
+on. `--window N` limits both sides to N days around the start.
+
+**`practice summary`** is the dashboard: total volume, a weekly **streak +
+minutes-per-week sparkline**, and the key view — **where your practice time
+goes vs where you need it** (your goal's category targets if a goal is set,
+otherwise your raw leaks), flagging mismatches:
+
+```
+Practice summary — last 90 days
+
+  Volume    8 sessions · 5.1 hrs · 2026-05-10 → 2026-06-14
+  Cadence   6-week streak · practiced 6 of last 12 weeks
+  Weekly    ▁▁▁▁▁▅▇▅▅█▆▁  min/week
+
+  Where your time goes vs goal need:
+    Approach      165m  54%   need +1.7/rd   well-invested
+    Putting        20m   7%   need +2.2/rd   under-invested
+    ...
+  Tip: shift time toward putting — high need, low practice.
+```
+
+A focus that isn't an SG category (e.g. a swing-fault tag like `head-sway`)
+is still logged and counted as time, but can't be scored against strokes
+gained.
 
 ### Swing analyzer (built)
 

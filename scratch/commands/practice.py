@@ -16,10 +16,12 @@ be scored against strokes gained.
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date as date_cls, datetime, timedelta
 
 from .. import db
 from ..constants import SG_CATEGORIES
+from .goal import category_targets
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -57,6 +59,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "started practicing (default: all history)",
     )
     prog.set_defaults(func=run_progress)
+
+    summ = sub.add_parser("summary",
+                          help="Volume, consistency, and time spent vs where you leak")
+    summ.add_argument("--days", type=int, default=90, help="Window in days (default 90)")
+    summ.set_defaults(func=run_summary)
 
 
 # --------------------------------------------------------------------------- #
@@ -120,7 +127,7 @@ def run_add(args: argparse.Namespace) -> int:
     print(f"Logged practice #{cur.lastrowid} on {iso_date}: focus={focus} ({dur}).")
     if focus in SG_CATEGORIES:
         print(f"  Tagged to SG category '{focus}' — run "
-              f"`python -m scratch practice progress` to track its impact.")
+              f"`scratch practice progress` to track its impact.")
     else:
         print(f"  Note: '{focus}' isn't an SG category, so it won't be scored "
               f"against strokes gained. Use one of: {', '.join(SG_CATEGORIES)}.")
@@ -135,7 +142,7 @@ def run_list(args: argparse.Namespace) -> int:
     ).fetchall()
     if not rows:
         print("No practice sessions yet. Add one with:")
-        print("  python -m scratch practice add --focus approach "
+        print("  scratch practice add --focus approach "
               "--drills 'wedge ladder' --duration 45")
         return 0
     header = f"{'ID':>3}  {'Date':<10}  {'Focus':<13}  {'Min':>4}  Drills / notes"
@@ -231,4 +238,149 @@ def run_progress(args: argparse.Namespace) -> int:
         print(f"Not tied to an SG category: {tags}")
         print(f"  Tag practice to one of {', '.join(SG_CATEGORIES)} to measure "
               "its strokes-gained impact.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# practice summary — volume, consistency, time-vs-need
+# --------------------------------------------------------------------------- #
+_SPARK = "▁▂▃▄▅▆▇█"
+
+
+def _color() -> bool:
+    return sys.stdout.isatty()
+
+
+def _c(s, code) -> str:
+    return f"\033[{code}m{s}\033[0m" if _color() else s
+
+
+def _pretty(text: str) -> str:
+    return text.replace("-", " ").title()
+
+
+def _sparkline(vals) -> str:
+    if not vals:
+        return ""
+    hi = max(vals)
+    if hi <= 0:
+        return _SPARK[0] * len(vals)
+    return "".join(_SPARK[int(v / hi * (len(_SPARK) - 1))] for v in vals)
+
+
+def _week_start(iso: str) -> int:
+    d = datetime.strptime(iso, "%Y-%m-%d").date()
+    return d.toordinal() - d.weekday()  # Monday's ordinal
+
+
+def _sg_cats(conn, days):
+    rows = conn.execute(
+        "SELECT category, sg, date, round_id FROM shots "
+        "WHERE sg IS NOT NULL AND date >= date('now', ?)",
+        (f"-{int(days)} days",),
+    ).fetchall()
+    agg = {c: [0.0, set()] for c in SG_CATEGORIES}
+    for r in rows:
+        if r["category"] in agg:
+            agg[r["category"]][0] += r["sg"]
+            key = ("r", r["round_id"]) if r["round_id"] is not None else ("d", r["date"])
+            agg[r["category"]][1].add(key)
+    return {c: tot / len(keys) for c, (tot, keys) in agg.items() if keys}
+
+
+def run_summary(args: argparse.Namespace) -> int:
+    conn = db.connect(args.db)
+    days = args.days
+    sessions = conn.execute(
+        "SELECT date, focus, duration_min FROM practice_sessions "
+        "WHERE date >= date('now', ?) ORDER BY date ASC",
+        (f"-{int(days)} days",),
+    ).fetchall()
+    if not sessions:
+        print(f"No practice logged in the last {days} days.")
+        print("  scratch practice add --focus approach --drills 'wedge ladder' --duration 45")
+        return 0
+
+    total_min = sum(s["duration_min"] or 0 for s in sessions)
+    first, last = sessions[0]["date"], sessions[-1]["date"]
+    print(_c(f"Practice summary — last {days} days", "1;36"))
+    print(f"\n  Volume    {len(sessions)} sessions · {total_min / 60:.1f} hrs · "
+          f"{first} → {last}")
+
+    # Cadence: weekly streak + how many of the recent weeks had practice.
+    week_min: dict[int, int] = {}
+    for s in sessions:
+        w = _week_start(s["date"])
+        week_min[w] = week_min.get(w, 0) + (s["duration_min"] or 0)
+    today = date_cls.today()
+    cur = today.toordinal() - today.weekday()
+    practiced = set(week_min)
+    start = cur if cur in practiced else (cur - 7 if (cur - 7) in practiced else cur)
+    streak = 0
+    w = start
+    while w in practiced:
+        streak += 1
+        w -= 7
+    n_weeks = min(13, max(1, days // 7))
+    weeks = [cur - 7 * i for i in range(n_weeks - 1, -1, -1)]
+    series = [week_min.get(w, 0) for w in weeks]
+    hit = sum(1 for w in weeks if w in practiced)
+    print(f"  Cadence   {streak}-week streak · practiced {hit} of last {len(weeks)} weeks")
+    print(f"  Weekly    {_c(_sparkline(series), '36')}  min/week")
+
+    # Time spent per category vs where you need it (goal targets, else leaks).
+    by_cat: dict[str, int] = {c: 0 for c in SG_CATEGORIES}
+    other = 0
+    for s in sessions:
+        f = (s["focus"] or "").strip().lower()
+        if f in by_cat:
+            by_cat[f] += s["duration_min"] or 0
+        else:
+            other += s["duration_min"] or 0
+
+    goal_info = category_targets(conn, days)
+    targets = goal_info[3] if goal_info else {}
+    sg = _sg_cats(conn, days)
+
+    def need_of(cat):
+        """(label, need_value) — need_value > 0 means it wants work."""
+        if cat in targets:
+            return f"need {targets[cat]:+.1f}/rd", targets[cat]
+        per = sg.get(cat)
+        if per is None:
+            return "no shots", 0.0
+        if per < -0.05:
+            return f"leak {per:+.2f}/rd", abs(per)
+        return f"{per:+.2f}/rd", 0.0
+
+    needs = {c: need_of(c) for c in SG_CATEGORIES}
+    need_total = sum(v for _, v in needs.values())
+    label = "goal need" if targets else "leaks"
+    print(f"\n  Where your time goes vs {label}:")
+    under = []
+    for cat in sorted(SG_CATEGORIES, key=lambda c: -by_cat[c]):
+        mins = by_cat[cat]
+        if mins == 0 and needs[cat][1] == 0:
+            continue
+        share = (mins / total_min * 100) if total_min else 0
+        nlabel, nval = needs[cat]
+        tshare = (mins / total_min) if total_min else 0
+        nshare = (nval / need_total) if need_total else 0
+        flag = ""
+        if nval > 0 and tshare < nshare * 0.5:
+            flag = _c("under-invested", "33")
+            under.append((cat, nshare - tshare))
+        elif nval > 0 and tshare >= nshare * 0.85:
+            flag = _c("well-invested", "32")
+        elif nval == 0 and (sg.get(cat, 0) > 0.1) and tshare > 0.25:
+            flag = _c("strength — ease off", "2")
+        print(f"    {_pretty(cat):<12} {mins:>4}m {share:>3.0f}%   "
+              f"{nlabel:<14} {flag}")
+    if other:
+        print(f"    {'(untagged)':<12} {other:>4}m")
+
+    if under:
+        cat = max(under, key=lambda x: x[1])[0]
+        print(_c(f"\n  Tip: shift time toward {_pretty(cat).lower()} — "
+                 f"high need, low practice.", "1"))
     return 0
