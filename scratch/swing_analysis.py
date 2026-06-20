@@ -259,32 +259,26 @@ def detect_key_positions(frames, meta) -> dict | None:
     dy = np.diff(hand_y, prepend=hand_y[0])
     speed = _smooth(np.sqrt(dx * dx + dy * dy), 7)
 
-    # Address: walk back from the top past the quiet transition into the
-    # backswing, then back to where the hands were still (the takeaway start).
-    bpeak = float(np.max(speed[: top + 1])) if top > 0 else 0.0
-    thresh = max(bpeak * 0.18, 1e-4)
-    j = top
-    while j > 0 and speed[j] < thresh:        # skip the pause at the top
-        j -= 1
-    while j > 0 and speed[j] >= thresh:        # back through the backswing
-        j -= 1
-    address = j
+    # Address and impact share a hand height: the hands sit at the ball before
+    # the takeaway and return there at impact. Use a robust "hands low" height
+    # (high percentile of hand_y), then walk OUT from the top in both directions
+    # to the first frame at that height. Address = start of the takeaway (not
+    # the still setup or waggle, which is what inflated the backswing and skewed
+    # tempo); impact = hands back at the ball (not the finish). Timing-free.
+    addr_h = float(np.nanpercentile(hand_y, 88))
+    a = top
+    while a > 0 and hand_y[a] < addr_h * 0.97:
+        a -= 1
+    address = a
+    im = top
+    while im < last and hand_y[im] < addr_h * 0.97:
+        im += 1
+    if im >= last:                       # never returned: fall back to speed peak
+        im = top + 1 + int(np.argmax(speed[top + 1:])) if top + 1 < n else last
+    impact = im
+
     if address >= top:
         address = max(0, top - 1)
-
-    # Impact: during the downswing the hands swing back down to the ball, close
-    # to where they started at address. Between the top and the peak of hand
-    # speed (the release, just past impact), pick the frame where the hands are
-    # nearest the address position. Timing-free; lands at the ball, not the
-    # finish or the release.
-    speed_peak = top + 1 + int(np.argmax(speed[top + 1:])) if top + 1 < n else last
-    seg = np.arange(top + 1, max(top + 2, speed_peak + 1))
-    seg = seg[seg <= last]
-    if len(seg):
-        d = (hand_x[seg] - hand_x[address]) ** 2 + (hand_y[seg] - hand_y[address]) ** 2
-        impact = int(seg[int(np.argmin(d))])
-    else:
-        impact = min(top + 1, last)
     if impact <= top:
         impact = min(top + 1, last)
 
