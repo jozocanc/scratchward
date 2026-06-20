@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.venv/
+venv/
+
+# Local data (lives in ~/.scratch/, but never commit a stray DB or model)
+*.db
+*.task
+*.mp4
+*.png
+
+# macOS
+.DS_Store

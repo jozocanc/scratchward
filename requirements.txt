@@ -1,0 +1,9 @@
+# Core tool (handicap, strokes gained, practice, trainer) uses only the
+# Python standard library — nothing to install for those commands.
+#
+# The swing analyzer (golfcoach analyze) needs computer-vision deps.
+# Install these only when you want video analysis. On first run it also
+# downloads a ~9 MB MediaPipe pose model to ~/.golfcoach/models/.
+opencv-python>=4.8
+mediapipe>=0.10
+numpy>=1.24

@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scratchward"
+version = "0.1.0"
+description = "Terminal-first, all-in-one golf coaching tool"
+requires-python = ">=3.10"
+# Core commands need no third-party packages. Video analysis extras:
+dependencies = []
+
+[project.optional-dependencies]
+analyze = ["opencv-python>=4.8", "mediapipe>=0.10", "numpy>=1.24"]
+
+[project.scripts]
+# Convenience shell command. NOTE: this name is a packaging detail and is
+# separate from constants.APP_NAME. The rename-proof invocation is always
+# `python -m scratch`.
+scratch = "scratch.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["scratch*"]
