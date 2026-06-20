@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date as date_cls
 from pathlib import Path
 
@@ -33,73 +34,90 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     p.set_defaults(func=run)
 
 
-def _flag(ok: bool) -> str:
-    return "OK  " if ok else "FLAG"
+def _color() -> bool:
+    return sys.stdout.isatty()
+
+
+def _c(s, code) -> str:
+    return f"\033[{code}m{s}\033[0m" if _color() else s
+
+
+_BADGE = {"ok": ("42;30", " OK "), "warn": ("43;30", "WARN"),
+          "flag": ("41;97", "FLAG"), "na": ("100;97", " -- ")}
+_VALCOL = {"ok": "32", "warn": "33", "flag": "31", "na": "2"}
+
+
+def _badge(status: str) -> str:
+    code, txt = _BADGE[status]
+    return _c(f" {txt} ", code) if _color() else f"[{txt}]"
+
+
+def _metric(status, name, value, ref, extra="") -> None:
+    line = (f"  {_badge(status)}  {name:<22} {_c(value, _VALCOL[status])}"
+            f"   {_c('[' + ref + ']', '2')}")
+    if extra:
+        line += "  " + _c(extra, "2")
+    print(line)
 
 
 def _report(meta, keys, metrics, faults, view, sa) -> None:
     fps = meta["fps"]
-    print(f"\nSwing analysis — {view}")
-    print(
-        f"Source: {fps:.0f} fps, {meta['width']}x{meta['height']}, "
-        f"{meta['n_frames']} frames "
-        f"({keys['detected_frames']} with a body detected)"
-    )
+    print("\n" + _c(f"Swing analysis — {view}", "1;36"))
+    print(_c(f"Source: {fps:.0f} fps, {meta['width']}x{meta['height']}, "
+             f"{meta['n_frames']} frames "
+             f"({keys['detected_frames']} with a body detected)", "2"))
     if fps and fps < sa.LOW_FPS_WARN:
-        print(
-            f"  ! Low frame rate ({fps:.0f} fps). Tempo timing is coarse — "
-            f"120+ fps is ideal for swing capture."
-        )
-    print(
-        f"\nKey positions:  address=f{keys['address']}  "
-        f"top=f{keys['top']}  impact=f{keys['impact']}\n"
-    )
+        print(_c(f"  ! Low frame rate ({fps:.0f} fps). Tempo timing is coarse — "
+                 f"120+ fps is ideal for swing capture.", "33"))
+    print(_c(f"\nKey positions:  address f{keys['address']}   "
+             f"top f{keys['top']}   impact f{keys['impact']}", "2") + "\n")
 
     # Tempo
     tr = metrics["tempo_ratio"]
-    if tr is not None:
-        ok = sa.TEMPO_FAST <= tr <= sa.TEMPO_SLOW
-        print(f"  {_flag(ok)}  Tempo (back:down)      {tr:.1f} : 1     "
-              f"[ideal ~3:1, {sa.TEMPO_IDEAL[0]}-{sa.TEMPO_IDEAL[1]}]  "
-              f"({metrics['tempo_back_frames']}f / {metrics['tempo_down_frames']}f)")
+    if tr is None:
+        _metric("na", "Tempo (back:down)", "n/a", "ideal ~3:1",
+                "couldn't separate down/through")
     else:
-        print("  ----  Tempo                  n/a (couldn't separate down/through)")
+        st = "ok" if sa.TEMPO_FAST <= tr <= sa.TEMPO_SLOW else "flag"
+        _metric(st, "Tempo (back:down)", f"{tr:.1f} : 1",
+                f"ideal ~3:1, {sa.TEMPO_IDEAL[0]}-{sa.TEMPO_IDEAL[1]}",
+                f"{metrics['tempo_back_frames']}f / {metrics['tempo_down_frames']}f")
 
-    # X-factor
+    # X-factor (3-band)
     xf = metrics["x_factor"]
-    ok = xf >= sa.XFACTOR_LOW
-    print(f"  {_flag(ok)}  X-factor at top        {xf:.0f} deg       "
-          f"[strong >{sa.XFACTOR_STRONG:.0f}, low <{sa.XFACTOR_LOW:.0f}]  (2D estimate)")
+    st = ("ok" if xf >= sa.XFACTOR_STRONG else "warn" if xf >= sa.XFACTOR_LOW else "flag")
+    _metric(st, "X-factor at top", f"{xf:.0f} deg",
+            f"strong >{sa.XFACTOR_STRONG:.0f}, low <{sa.XFACTOR_LOW:.0f}", "2D estimate")
 
-    # Head movement
-    hm = metrics["head_movement"]
-    hl = metrics["head_lateral"]
-    primary = hl if view == "face-on" else hm
-    ok = primary <= sa.HEAD_SWAY_PCT
+    # Head movement (3-band)
+    primary = metrics["head_lateral"] if view == "face-on" else metrics["head_movement"]
+    st = ("ok" if primary <= sa.HEAD_GOOD_PCT
+          else "warn" if primary <= sa.HEAD_SWAY_PCT else "flag")
     which = "lateral" if view == "face-on" else "total"
-    print(f"  {_flag(ok)}  Head move (addr->imp)  {primary:.1f}% body ht  "
-          f"[good <{sa.HEAD_GOOD_PCT:.0f}%, sway >{sa.HEAD_SWAY_PCT:.0f}%]  ({which})")
+    _metric(st, "Head move (addr->imp)", f"{primary:.1f}% body ht",
+            f"good <{sa.HEAD_GOOD_PCT:.0f}%, sway >{sa.HEAD_SWAY_PCT:.0f}%", which)
 
-    # Spine
+    # Spine (3-band)
     sc = metrics["spine_change"]
-    ok = sc <= sa.SPINE_CHANGE_OK
-    print(f"  {_flag(ok)}  Spine-angle change     {sc:.0f} deg       "
-          f"[consistent <{sa.SPINE_CHANGE_OK:.0f}, loss >{sa.SPINE_CHANGE_BAD:.0f}]  "
-          f"(addr {metrics['spine_address']:.0f} -> imp {metrics['spine_impact']:.0f})")
+    st = ("ok" if sc <= sa.SPINE_CHANGE_OK
+          else "warn" if sc <= sa.SPINE_CHANGE_BAD else "flag")
+    _metric(st, "Spine-angle change", f"{sc:.0f} deg",
+            f"consistent <{sa.SPINE_CHANGE_OK:.0f}, loss >{sa.SPINE_CHANGE_BAD:.0f}",
+            f"addr {metrics['spine_address']:.0f} -> imp {metrics['spine_impact']:.0f}")
 
-    # View-specific reliability note.
     if view == "down-the-line":
-        print("\n  View note: spine angle and head depth read best down-the-line; "
-              "treat X-factor and lateral sway as rough.")
+        note = ("spine angle and head depth read best down-the-line; "
+                "treat X-factor and lateral sway as rough.")
     else:
-        print("\n  View note: lateral sway and tempo read best face-on; "
-              "treat spine angle as rough from the front.")
+        note = ("lateral sway and tempo read best face-on; "
+                "treat spine angle as rough from the front.")
+    print("\n  " + _c("View note: " + note, "2"))
 
     if faults:
-        print(f"\n  Faults flagged: {', '.join(faults)}")
-        print("  -> feed the trainer: python -m scratch train")
+        print(f"\n  {_c('Faults flagged:', '1;31')} {_c(', '.join(faults), '31')}")
+        print(_c("  -> feed the trainer: scratch train", "2"))
     else:
-        print("\n  No major faults flagged.")
+        print("\n  " + _c("No major faults flagged.", "1;32"))
 
 
 def run(args: argparse.Namespace) -> int:
@@ -141,7 +159,7 @@ def run(args: argparse.Namespace) -> int:
     while out_dir.exists():
         out_dir = base / f"{video.stem}-{n}"
         n += 1
-    outputs = sa.render_outputs(video, frames, keys, metrics, meta, out_dir)
+    outputs = sa.render_outputs(video, frames, keys, metrics, meta, out_dir, args.view)
 
     # Persist.
     conn = db.connect(args.db)

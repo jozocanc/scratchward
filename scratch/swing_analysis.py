@@ -330,50 +330,151 @@ def compute_metrics(frames, keys, meta, view: str) -> tuple[dict, list]:
 # --------------------------------------------------------------------------- #
 # rendering
 # --------------------------------------------------------------------------- #
+# BGR colors for the annotated overlays.
+_COL = {
+    "panel": (34, 30, 26), "white": (245, 245, 245), "dim": (180, 180, 180),
+    "ok": (95, 200, 120), "warn": (60, 190, 240), "flag": (72, 80, 235),
+    "accent": (200, 180, 45), "accent2": (60, 165, 250),
+    "limbL": (235, 185, 70), "limbR": (70, 165, 250),
+    "torso": (236, 236, 236), "face": (150, 150, 150), "joint": (255, 255, 255),
+}
+_FONT = cv2.FONT_HERSHEY_SIMPLEX
+_LEFT = {11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31}
+_RIGHT = {12, 14, 16, 18, 20, 22, 24, 26, 28, 30, 32}
+_FACE_IDX = set(range(0, 11))
+_TORSO_CONN = frozenset({(11, 12), (23, 24), (11, 23), (12, 24)})
+_TITLES = {"ADDRESS": "ADDRESS", "TOP": "TOP OF BACKSWING", "IMPACT": "IMPACT"}
+
+
 def _phase(i: int, keys: dict) -> str:
     if i < keys["address"]:
-        return "setup"
+        return "Setup"
     if i < keys["top"]:
-        return "backswing"
+        return "Backswing"
     if i < keys["impact"]:
-        return "downswing"
-    return "follow-through"
+        return "Downswing"
+    return "Follow-through"
 
 
-def _draw_skeleton(frame, lm, w, h) -> None:
+def _blend_rect(img, x1, y1, x2, y2, color, alpha) -> None:
+    h, w = img.shape[:2]
+    x1, y1, x2, y2 = max(0, x1), max(0, y1), min(w, x2), min(h, y2)
+    if x2 <= x1 or y2 <= y1:
+        return
+    roi = img[y1:y2, x1:x2]
+    overlay = roi.copy()
+    overlay[:] = color
+    cv2.addWeighted(overlay, alpha, roi, 1 - alpha, 0, roi)
+
+
+def _text(img, s, org, scale, color, thick=1) -> None:
+    cv2.putText(img, s, (org[0] + 1, org[1] + 1), _FONT, scale, (12, 12, 12),
+                thick, cv2.LINE_AA)
+    cv2.putText(img, s, org, _FONT, scale, color, thick, cv2.LINE_AA)
+
+
+def _seg_color(a, b):
+    key = (min(a, b), max(a, b))
+    if key in _TORSO_CONN:
+        return _COL["torso"]
+    if a in _FACE_IDX and b in _FACE_IDX:
+        return _COL["face"]
+    if a in _LEFT and b in _LEFT:
+        return _COL["limbL"]
+    if a in _RIGHT and b in _RIGHT:
+        return _COL["limbR"]
+    return _COL["torso"]
+
+
+def _draw_skeleton(frame, lm, w, h, thick) -> None:
     pts = [(int(p[0] * w), int(p[1] * h)) for p in lm]
+    vis = [p[3] for p in lm]
     for a, b in POSE_CONNECTIONS:
-        if a < len(pts) and b < len(pts):
-            cv2.line(frame, pts[a], pts[b], (0, 200, 0), 2)
-    for x, y in pts:
-        cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)
+        if a < len(pts) and b < len(pts) and vis[a] > 0.3 and vis[b] > 0.3:
+            cv2.line(frame, pts[a], pts[b], _seg_color(a, b), thick, cv2.LINE_AA)
+    for idx, (x, y) in enumerate(pts):
+        if vis[idx] > 0.3:
+            cv2.circle(frame, (x, y), thick + 1, _COL["joint"], -1, cv2.LINE_AA)
+            cv2.circle(frame, (x, y), thick + 1, (40, 40, 40), 1, cv2.LINE_AA)
 
 
-def _still_lines(label: str, metrics: dict) -> list[str]:
+def _px(lm, idx, w, h):
+    p = lm[idx]
+    return (int(p[0] * w), int(p[1] * h))
+
+
+def _mid_px(lm, a, b, w, h):
+    ax, ay = _px(lm, a, w, h)
+    bx, by = _px(lm, b, w, h)
+    return ((ax + bx) // 2, (ay + by) // 2)
+
+
+def _glow_line(frame, p1, p2, color, thick) -> None:
+    cv2.line(frame, p1, p2, (20, 20, 20), thick + 4, cv2.LINE_AA)
+    cv2.line(frame, p1, p2, color, thick, cv2.LINE_AA)
+
+
+def _rows(label, metrics, view):
+    """(label, value, status) rows for a key position, status drives color."""
     if label == "TOP":
+        xf = metrics["x_factor"]
         return [
-            f"X-factor: {metrics['x_factor']:.0f} deg",
-            f"(shoulders {metrics['shoulder_turn']:+.0f}, hips {metrics['hip_turn']:+.0f})",
+            ("X-factor", f"{xf:.0f} deg", "ok" if xf >= XFACTOR_LOW else "flag"),
+            ("turn", f"sh {metrics['shoulder_turn']:+.0f}  hip {metrics['hip_turn']:+.0f}", "dim"),
         ]
     if label == "IMPACT":
-        return [
-            f"Head move: {metrics['head_movement']:.1f}% body ht",
-            f"Spine change: {metrics['spine_change']:.0f} deg",
-        ]
-    # ADDRESS
+        hm = metrics["head_lateral"] if view == "face-on" else metrics["head_movement"]
+        hst = "ok" if hm <= HEAD_GOOD_PCT else "warn" if hm <= HEAD_SWAY_PCT else "flag"
+        sc = metrics["spine_change"]
+        sst = "ok" if sc <= SPINE_CHANGE_OK else "warn" if sc <= SPINE_CHANGE_BAD else "flag"
+        return [("Head move", f"{hm:.1f}% body", hst), ("Spine change", f"{sc:.0f} deg", sst)]
     tr = metrics["tempo_ratio"]
-    return [
-        f"Tempo: {tr:.1f}:1" if tr else "Tempo: n/a",
-        f"Spine @ address: {metrics['spine_address']:.0f} deg",
-    ]
+    if tr is None:
+        trow = ("Tempo", "n/a", "dim")
+    else:
+        trow = ("Tempo", f"{tr:.1f} : 1", "ok" if TEMPO_FAST <= tr <= TEMPO_SLOW else "flag")
+    return [trow, ("Spine @ addr", f"{metrics['spine_address']:.0f} deg", "dim")]
 
 
-def render_outputs(video_path, frames, keys, metrics, meta, out_dir) -> dict:
+def _draw_card(img, label, metrics, view, s) -> None:
+    rows = _rows(label, metrics, view)
+    title_sc, row_sc = 0.8 * s, 0.6 * s
+    pad, line_h = int(14 * s), int(30 * s)
+    x0, y0 = int(14 * s), int(52 * s)           # sits below the header bar
+    sized = [(_TITLES[label], title_sc, 2)] + [(f"{l}: {v}", row_sc, 2) for l, v, _ in rows]
+    width = max(cv2.getTextSize(t, _FONT, sc, th)[0][0] for t, sc, th in sized) + int(40 * s)
+    height = pad * 2 + int(20 * s) + line_h * len(rows)
+    _blend_rect(img, x0, y0, x0 + width, y0 + height, _COL["panel"], 0.6)
+    _blend_rect(img, x0, y0, x0 + int(6 * s), y0 + height, _COL["accent"], 0.95)
+    x, y = x0 + int(20 * s), y0 + int(30 * s)
+    _text(img, _TITLES[label], (x, y), title_sc, _COL["white"], 2)
+    for lab, val, st in rows:
+        y += line_h
+        _text(img, f"{lab}:", (x, y), row_sc, _COL["dim"], 1)
+        (lw, _), _ = cv2.getTextSize(f"{lab}:  ", _FONT, row_sc, 1)
+        _text(img, val, (x + lw, y), row_sc, _COL.get(st, _COL["white"]), 2)
+
+
+def _draw_highlights(frame, lm, label, w, h, thick) -> None:
+    if label in ("ADDRESS", "IMPACT"):
+        _glow_line(frame, _mid_px(lm, L_HIP, R_HIP, w, h),
+                   _mid_px(lm, L_SH, R_SH, w, h), _COL["accent"], thick + 1)
+    if label == "TOP":
+        _glow_line(frame, _px(lm, L_SH, w, h), _px(lm, R_SH, w, h), _COL["accent"], thick + 1)
+        _glow_line(frame, _px(lm, L_HIP, w, h), _px(lm, R_HIP, w, h), _COL["accent2"], thick + 1)
+    if label == "IMPACT":
+        cv2.circle(frame, _px(lm, NOSE, w, h), thick + 4, _COL["accent2"], 2, cv2.LINE_AA)
+
+
+def render_outputs(video_path, frames, keys, metrics, meta, out_dir,
+                   view="down-the-line") -> dict:
     """Write an annotated video and key stills; return their paths."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     w, h = meta["width"], meta["height"]
     fps = meta["fps"] or 30.0
+    s = max(0.7, min(2.2, h / 720))          # scale overlays to resolution
+    thick = max(2, round(h / 240))
 
     cap = cv2.VideoCapture(str(video_path))
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
@@ -382,7 +483,8 @@ def render_outputs(video_path, frames, keys, metrics, meta, out_dir) -> dict:
 
     keymap = {keys["address"]: "ADDRESS", keys["top"]: "TOP", keys["impact"]: "IMPACT"}
     stills: dict[str, Path] = {}
-    font = cv2.FONT_HERSHEY_SIMPLEX
+    bar = int(40 * s)
+    bh = int(46 * s)
 
     i = 0
     while True:
@@ -391,19 +493,29 @@ def render_outputs(video_path, frames, keys, metrics, meta, out_dir) -> dict:
             break
         lm = frames[i] if i < len(frames) else None
         if lm is not None:
-            _draw_skeleton(frame, lm, w, h)
-        cv2.putText(frame, f"{_phase(i, keys)}  f{i}", (12, 30), font, 0.8,
-                    (255, 255, 255), 2, cv2.LINE_AA)
+            _draw_skeleton(frame, lm, w, h, thick)
+        _blend_rect(frame, 0, 0, w, bar, _COL["panel"], 0.45)
+        _text(frame, _phase(i, keys), (int(14 * s), int(28 * s)), 0.7 * s, _COL["white"], 2)
+        _text(frame, f"frame {i}", (w - int(150 * s), int(28 * s)), 0.55 * s, _COL["dim"], 1)
+        _text(frame, "scratch - swing analysis",
+              (w - int(250 * s), h - int(14 * s)), 0.5 * s, _COL["dim"], 1)
+
         if i in keymap:
             label = keymap[i]
-            cv2.putText(frame, label, (12, h - 24), font, 1.0, (0, 255, 255), 2,
-                        cv2.LINE_AA)
             still = frame.copy()
-            y = 64
-            for line in _still_lines(label, metrics):
-                cv2.putText(still, line, (12, y), font, 0.7, (0, 255, 255), 2,
-                            cv2.LINE_AA)
-                y += 30
+            if lm is not None:
+                _draw_highlights(still, lm, label, w, h, thick)
+                if label == "IMPACT":
+                    addr_lm = frames[keys["address"]]
+                    if addr_lm is not None:
+                        an, cn = _px(addr_lm, NOSE, w, h), _px(lm, NOSE, w, h)
+                        cv2.circle(still, an, thick + 3, _COL["dim"], 1, cv2.LINE_AA)
+                        _glow_line(still, an, cn, _COL["accent2"], thick)
+            for img in (still, frame):  # banner on both the still and the video
+                _blend_rect(img, 0, h - bh, w, h, _COL["panel"], 0.55)
+                _text(img, _TITLES[label], (int(14 * s), h - int(16 * s)),
+                      0.8 * s, _COL["accent"], 2)
+            _draw_card(still, label, metrics, view, s)
             path = out_dir / f"{label.lower()}.png"
             cv2.imwrite(str(path), still)
             stills[label] = path
