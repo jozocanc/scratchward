@@ -38,6 +38,7 @@ def connect(cli_path: str | None = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     _init_schema(conn)
+    _migrate(conn)
     return conn
 
 
@@ -93,6 +94,8 @@ CREATE TABLE IF NOT EXISTS goals (
     kind         TEXT    NOT NULL DEFAULT 'handicap',
     target_value REAL    NOT NULL,
     target_date  TEXT,
+    start_value  REAL,
+    start_date   TEXT,
     active       INTEGER NOT NULL DEFAULT 1,
     created_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 );
@@ -153,4 +156,20 @@ CREATE TABLE IF NOT EXISTS swing_analyses (
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    conn.commit()
+
+
+# Columns added after the original schema shipped. CREATE TABLE IF NOT EXISTS
+# won't add them to an existing table, so patch them in idempotently.
+_ADDED_COLUMNS = {
+    "goals": [("start_value", "REAL"), ("start_date", "TEXT")],
+}
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
     conn.commit()

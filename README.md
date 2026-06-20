@@ -331,35 +331,51 @@ you what to log. The drill/mobility library lives in
 `scratch/data/drills.py` — add your own, tagged by category/fault, and
 the trainer will pick them up.
 
-### Goal tracking (built — first Phase 2 feature)
+### Goal tracking (built — Phase 2)
 
-Set a target Handicap Index; `goal status` turns the gap into concrete
-work using your existing rounds + shots (no new logging needed).
+Set a target Handicap Index; Scratchward tracks the whole journey using
+your existing rounds + shots (no new logging). `set` captures a baseline,
+so progress is measured from where you started.
 
 ```bash
-python -m scratch goal set --handicap 10                 # open-ended, projects an ETA
-python -m scratch goal set --handicap 10 --by 2026-12-31  # dated, judges on/behind pace
-python -m scratch goal status
-python -m scratch goal clear
+scratch goal set --handicap 10 --by 2026-12-31  # captures today's Index as the baseline
+scratch goal status
+scratch goal project --approach 1.0 --putting 0.5   # what-if on your Index
+scratch goal clear
 ```
 
-It computes the strokes/round you need to gain (handicap points ≈
-strokes/round), **distributes that gap across your current SG leaks** —
-biggest leak absorbs the most — and projects a timeline from your recent
-improvement rate. Sample:
+`goal status` shows a **progress bar + % closed** (baseline → now → target),
+a **trajectory sparkline** of your Index over recent rounds, a **milestone
+ladder**, the **per-category strokes you still need** (biggest leak absorbs
+the most) with **how each is moving since you set the goal**, and a realistic
+**pace/ETA**. Sample:
 
 ```
-Goal: reach a 10.0 Handicap Index
-Current Index: 12.9   →   gap: +2.9 (improve)
+Goal: reach a 9.0 Handicap Index by 2026-12-31
 
-You need to gain ~2.9 strokes/round. Where it comes from:
-  • Approach      improve +2.4/round  (now -0.8 → +1.6)
-  • Putting       improve +0.5/round  (now -0.2 → +0.3)
-  Note: erasing all current leaks is ~1.0 strokes — the last 1.9 must come
-  from raising your stronger areas above average.
+  14.0  ███████░░░░░░░░░░░░░░░  9.0
+        closed +1.7 of 5.0 strokes (34%) — now 12.3
 
-At your recent rate (+2.3 strokes/month), ETA ~1 month → around 2026-07-28.
+  Trajectory  ▅▆█▅▅▅▅▃▃▂▁▁  (12 rounds: 15.1 -> 12.3, -2.8)
+
+  Milestones
+    [x] 13.0   reached
+    [>] 12.0   next, 0.3 to go
+    [ ] 11.0
+    [ ] 10.0
+    [ ]  9.0  goal
+
+  To reach 9.0 you need ~3.3 more strokes/round:
+    Putting      target +1.8/round   (now -0.4)
+    Approach     target +1.5/round   (now -0.3, up +1.1 since goal)
+
+  Pace: 194 days left, need ~0.5 strokes/month.
+        recent rate +1.7/month — on pace.
 ```
+
+`goal project` answers "if I gain +1.0 on approach and +0.5 putting, where
+does my Index land?" — handy for deciding where to spend practice time. The
+same leaks drive `train`, so the goal and your practice plan stay in sync.
 
 With a `--by` date it instead tells you the strokes/month you'd need and
 whether your recent rate has you on pace. The same leaks drive `train`, so
