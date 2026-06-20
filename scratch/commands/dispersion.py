@@ -49,6 +49,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
                      help="Window in days (default 365)")
     rep.set_defaults(func=run_report)
 
+    cl = sub.add_parser("club", help="Deep dive on one club")
+    cl.add_argument("club", help="Club, e.g. 7i, driver")
+    cl.add_argument("--days", type=int, default=365, help="Window in days (default 365)")
+    cl.set_defaults(func=run_club)
+
 
 # --------------------------------------------------------------------------- #
 # pure stats
@@ -178,13 +183,14 @@ def run_log(args):
 def run_report(args):
     conn = db.connect(args.db)
     rows = conn.execute(
-        "SELECT club, carry, side FROM club_shots WHERE date >= date('now', ?)",
+        "SELECT club, carry, side FROM club_shots WHERE date >= date('now', ?) "
+        "ORDER BY date ASC, id ASC",
         (f"-{int(args.days)} days",),
     ).fetchall()
     if not rows:
         print(f"No club shots logged in the last {args.days} days.")
-        print("Log some with:  python -m scratch dispersion log")
-        print("            or:  python -m scratch dispersion add --club 7i --carry 155")
+        print("Log some with:  scratch dispersion log")
+        print("            or:  scratch dispersion add --club 7i --carry 155")
         return 0
 
     by_club: dict[str, list] = {}
@@ -199,15 +205,19 @@ def run_report(args):
     print(f"Club distances & dispersion — last {args.days} days "
           f"({len(rows)} shots)\n")
     header = (f"  {'Club':<8} {'n':>3}  {'Carry':>5}  {'Reliable':>8}  "
-              f"{'Spread':>14}  {'Side':>10}")
+              f"{'Spread':>14}  {'Side':>10}  {'Trend':>6}")
     print(header)
     print("  " + "-" * (len(header) - 2))
     for c in order:
         s = stats[c]
         spread = f"±{s['std']:.0f} ({s['min']:.0f}-{s['max']:.0f})"
+        trend = _carry_trend([x[0] for x in by_club[c]])
+        trend_s = ("-" if trend is None
+                   else f"{trend:+.0f}y" if abs(trend) >= 1 else "flat")
         low = "  *low data" if s["n"] < 3 else ""
         print(f"  {_pretty_club(c):<8} {s['n']:>3}  {s['mean']:>5.0f}  "
-              f"{s['reliable']:>8.0f}  {spread:>14}  {_side_str(s):>10}{low}")
+              f"{s['reliable']:>8.0f}  {spread:>14}  {_side_str(s):>10}  "
+              f"{trend_s:>6}{low}")
 
     # Gapping.
     print("\nGapping (by reliable carry):")
@@ -222,4 +232,93 @@ def run_report(args):
 
     print(f"\n'Reliable' = the carry you beat ~{100 - RELIABLE_PCTL}% of the time "
           "— plan club selection off this, not your best strike.")
+    print("'Trend' = recent-half vs earlier-half carry. "
+          "Drill into one club: scratch dispersion club 7i")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# dispersion club — deep dive on one club
+# --------------------------------------------------------------------------- #
+def _carry_trend(carries):
+    """Recent-half minus earlier-half mean carry, or None if too few shots."""
+    if len(carries) < 4:
+        return None
+    h = len(carries) // 2
+    early, recent = carries[:h], carries[h:]
+    return statistics.fmean(recent) - statistics.fmean(early)
+
+
+def _histogram(values, bins=6, width=20):
+    lo, hi = min(values), max(values)
+    if hi - lo < 1e-9:
+        return [(lo, hi, len(values), "#" * width)]
+    counts = [0] * bins
+    for v in values:
+        counts[min(bins - 1, int((v - lo) / (hi - lo) * bins))] += 1
+    peak = max(counts) or 1
+    step = (hi - lo) / bins
+    out = []
+    for i, c in enumerate(counts):
+        out.append((lo + i * step, lo + (i + 1) * step, c,
+                    "#" * int(c / peak * width)))
+    return out
+
+
+def run_club(args) -> int:
+    conn = db.connect(args.db)
+    club = _norm_club(args.club)
+    rows = conn.execute(
+        "SELECT carry, side, date FROM club_shots WHERE club = ? COLLATE NOCASE "
+        "AND date >= date('now', ?) ORDER BY date ASC, id ASC",
+        (club, f"-{int(args.days)} days"),
+    ).fetchall()
+    if not rows:
+        print(f"No shots for {_pretty_club(club)} in the last {args.days} days.")
+        print(f"  scratch dispersion add --club {club} --carry 150 --side -3")
+        return 0
+
+    carries = [r["carry"] for r in rows]
+    sides = [r["side"] for r in rows if r["side"] is not None]
+    s = club_stats(carries, [r["side"] for r in rows])
+    sc = sorted(carries)
+    n = len(carries)
+
+    print(f"{_pretty_club(club)} — {n} shots, last {args.days} days "
+          f"({rows[0]['date']} to {rows[-1]['date']})\n")
+    print(f"  Carry        stock {_percentile(sc, 50):.0f}   "
+          f"reliable {s['reliable']:.0f} (beat ~80%)   "
+          f"flush {_percentile(sc, 80):.0f} (top 20%)")
+    print(f"               range {s['min']:.0f}-{s['max']:.0f},  spread +/-{s['std']:.0f}")
+
+    if sides:
+        left = sum(1 for x in sides if x < -1)
+        right = sum(1 for x in sides if x > 1)
+        center = len(sides) - left - right
+        m = s["side_mean"]
+        bias = f"{abs(m):.0f}{'R' if m > 0 else 'L'}" if abs(m) >= 0.5 else "straight"
+        print(f"  Lateral      bias {bias}   spread +/-{s['side_std']:.0f}   "
+              f"{left / len(sides) * 100:.0f}% L / {center / len(sides) * 100:.0f}% C "
+              f"/ {right / len(sides) * 100:.0f}% R")
+    else:
+        print("  Lateral      no side data — add --side when you log "
+              "(e.g. --side -5 for 5 yds left)")
+
+    cov = s["std"] / s["mean"] if s["mean"] else 0
+    rating = "tight" if cov < 0.04 else "average" if cov < 0.07 else "loose"
+    print(f"  Consistency  {rating}  (carry varies +/-{cov * 100:.0f}%)")
+
+    trend = _carry_trend(carries)
+    if trend is not None and n >= 6:
+        half = n // 2
+        se = statistics.stdev(carries[:half]) if half > 1 else 0
+        sr = statistics.stdev(carries[half:]) if (n - half) > 1 else 0
+        spread_word = ("tighter" if sr < se - 0.5 else "looser" if sr > se + 0.5
+                       else "steady")
+        print(f"  Trend        carry {trend:+.0f} yds, dispersion {spread_word}  "
+              f"(recent {n - half} vs earlier {half})")
+
+    print("\n  Carry distribution:")
+    for lo, hi, c, bar in _histogram(carries):
+        print(f"    {lo:>4.0f}-{hi:<4.0f} {bar} {c}")
     return 0

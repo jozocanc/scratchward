@@ -422,41 +422,49 @@ Log carry per club, then get a **reliable** planning distance and the
 your set.
 
 ```bash
-# Bulk entry — club by club (fastest for a range/Trackman session)
-python -m scratch dispersion log
-
-# One-liner — a single shot; --side is yards offline (- left / + right)
-python -m scratch dispersion add --club 7i --carry 155 --side -3
-
-python -m scratch dispersion report          # last 365 days
-python -m scratch dispersion report --days 30
+scratch dispersion log                              # bulk entry, club by club
+scratch dispersion add --club 7i --carry 155 --side -3   # one shot (--side: -left/+right)
+scratch dispersion report                           # the bag: distances + gapping
+scratch dispersion club 7i                          # deep dive on one club
 ```
 ```
-Club distances & dispersion — last 365 days (18 shots)
-
-  Club       n  Carry  Reliable          Spread        Side
-  ---------------------------------------------------------
-  Driver     5    264       256    ±9 (250-272)       4R ±4
-  3W         3    242       239    ±4 (238-245)           -
-  7I         7    154       150    ±4 (148-160)       0· ±5
-  PW         3    121       118    ±3 (118-124)           -
+  Club       n  Carry  Reliable          Spread        Side   Trend
+  -----------------------------------------------------------------
+  Driver     5    266       263    ±6 (258-272)           -     -6y
+  7I         6    153       149    ±4 (148-158)       1L ±4     +7y
 
 Gapping (by reliable carry):
-  Driver   256 yds
-       │ 18 yd gap
-  3W       239 yds
-       │ 88 yd gap   <- large gap, consider filling
-  7I       150 yds
-       │ 32 yd gap   <- large gap, consider filling
-  PW       118 yds
+  Driver   263 yds
+       │ 114 yd gap   <- large gap, consider filling
+  7I       149 yds
 ```
 
-**Reliable** = the carry you beat ~80% of the time (20th-percentile once
-you have ≥5 shots; mean − 0.85·std for small samples) — plan club
-selection off that, not your one flush. **Side** shows your average miss
-bias and its spread. Stats are in `club_stats` in
-`scratch/commands/dispersion.py`. This is the data on-course strategy
-plans from.
+**Reliable** = the carry you beat ~80% of the time (20th-percentile) — plan
+off that, not your one flush. **Side** is your average miss bias and spread.
+**Trend** compares your recent-half vs earlier-half carry, so you can see a
+club gaining or losing distance.
+
+**`dispersion club <name>`** drills into a single club — stock / reliable /
+flush carries, your left-center-right miss split, a **consistency rating**, a
+**distance + dispersion trend**, and a carry histogram:
+
+```
+7I — 6 shots, last 365 days (2026-05-02 to 2026-06-14)
+
+  Carry        stock 153   reliable 149 (beat ~80%)   flush 156 (top 20%)
+               range 148-158,  spread +/-4
+  Lateral      bias 1L   spread +/-4   50% L / 17% C / 33% R
+  Consistency  tight  (carry varies +/-3%)
+  Trend        carry +7 yds, dispersion steady  (recent 3 vs earlier 3)
+
+  Carry distribution:
+    148-150  #################### 2
+    155-156  #################### 2
+    ...
+```
+
+Stats live in `club_stats` in `scratch/commands/dispersion.py`. This is the
+data on-course strategy plans from.
 
 ### On-course strategy (built — Phase 2)
 
