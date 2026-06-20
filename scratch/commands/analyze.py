@@ -70,7 +70,13 @@ def _report(meta, keys, metrics, faults, view, sa) -> None:
         print(_c(f"  ! Low frame rate ({fps:.0f} fps). Tempo timing is coarse — "
                  f"120+ fps is ideal for swing capture.", "33"))
     print(_c(f"\nKey positions:  address f{keys['address']}   "
-             f"top f{keys['top']}   impact f{keys['impact']}", "2") + "\n")
+             f"top f{keys['top']}   impact f{keys['impact']}", "2"))
+    if not keys.get("confident", True):
+        print(_c("  ! Couldn't confidently isolate a single swing — the clip looks "
+                 "untrimmed or cut off, so the numbers below are unreliable.\n"
+                 "    Trim to ~address-through-finish (one swing, golfer in frame) "
+                 "and re-run.", "1;33"))
+    print()
 
     # Tempo
     tr = metrics["tempo_ratio"]

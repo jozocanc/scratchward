@@ -165,6 +165,19 @@ def _line_angle(frames, i, a, b) -> float:
     return math.degrees(math.atan2(by - ay, bx - ax))
 
 
+def _rot_y(frames, i, a, b) -> float:
+    """Angle of the a->b segment about the vertical axis, in the horizontal
+    (x, z) plane, using MediaPipe's depth (z) coordinate. This captures real
+    body rotation that a flat 2D image angle can't — a turning shoulder line
+    barely changes its 2D angle but sweeps through depth.
+    """
+    lm = frames[i]
+    if lm is None:
+        return math.nan
+    pa, pb = lm[a], lm[b]
+    return math.degrees(math.atan2(pb[2] - pa[2], pb[0] - pa[0]))
+
+
 def _spine_angle(frames, i) -> float:
     """Angle of the hip->shoulder line from vertical, in degrees."""
     sx, sy = _mid(frames, i, L_SH, R_SH)
@@ -185,6 +198,15 @@ def _hand_y(frames) -> np.ndarray:
         _, ry = _pt(frames, i, R_WR)
         ys.append(np.nanmean([ly, ry]))
     return np.array(ys, dtype=float)
+
+
+def _hand_x(frames) -> np.ndarray:
+    xs = []
+    for i in range(len(frames)):
+        lx, _ = _pt(frames, i, L_WR)
+        rx, _ = _pt(frames, i, R_WR)
+        xs.append(np.nanmean([lx, rx]))
+    return np.array(xs, dtype=float)
 
 
 def _fill(a: np.ndarray) -> np.ndarray:
@@ -220,38 +242,64 @@ def detect_key_positions(frames, meta) -> dict | None:
     if detected < 3 or len(frames) < 3:
         return None
 
-    hand_y = _smooth(_fill(_hand_y(frames)), 5)
+    hand_y = _smooth(_fill(_hand_y(frames)), 7)
+    hand_x = _smooth(_fill(_hand_x(frames)), 7)
     if np.all(np.isnan(hand_y)):
         return None
+    n = len(hand_y)
+    last = n - 1
 
-    top = int(np.argmin(hand_y))  # highest hands == smallest y
-    address = 0 if top <= 0 else int(np.argmax(hand_y[: top + 1]))
-    addr_level = hand_y[address]
+    # Top of backswing: hands at their highest (smallest y) — a robust global pick.
+    top = int(np.argmin(hand_y))
 
-    # Impact: after the top, the first frame where hands return to ~address
-    # height (coming back down to the ball).
-    impact = None
-    for j in range(1, len(hand_y) - top):
-        if hand_y[top + j] >= addr_level * 0.97:
-            impact = top + j
-            break
-    if impact is None:
-        tail = hand_y[top:]
-        impact = top + (int(np.argmin(np.abs(tail - addr_level))) if len(tail) > 1 else 1)
+    # Frame-to-frame hand speed — drives the address (still) detection. Using
+    # motion (not elapsed time) keeps detection correct on slow-motion clips,
+    # which is how swings are usually filmed.
+    dx = np.diff(hand_x, prepend=hand_x[0])
+    dy = np.diff(hand_y, prepend=hand_y[0])
+    speed = _smooth(np.sqrt(dx * dx + dy * dy), 7)
 
-    # Keep ordering sane and in-bounds: address < top < impact <= last.
-    last = len(hand_y) - 1
-    if top <= address:
-        top = min(address + 1, last)
-    impact = min(impact, last)
+    # Address: walk back from the top past the quiet transition into the
+    # backswing, then back to where the hands were still (the takeaway start).
+    bpeak = float(np.max(speed[: top + 1])) if top > 0 else 0.0
+    thresh = max(bpeak * 0.18, 1e-4)
+    j = top
+    while j > 0 and speed[j] < thresh:        # skip the pause at the top
+        j -= 1
+    while j > 0 and speed[j] >= thresh:        # back through the backswing
+        j -= 1
+    address = j
+    if address >= top:
+        address = max(0, top - 1)
+
+    # Impact: during the downswing the hands swing back down to the ball, close
+    # to where they started at address. Between the top and the peak of hand
+    # speed (the release, just past impact), pick the frame where the hands are
+    # nearest the address position. Timing-free; lands at the ball, not the
+    # finish or the release.
+    speed_peak = top + 1 + int(np.argmax(speed[top + 1:])) if top + 1 < n else last
+    seg = np.arange(top + 1, max(top + 2, speed_peak + 1))
+    seg = seg[seg <= last]
+    if len(seg):
+        d = (hand_x[seg] - hand_x[address]) ** 2 + (hand_y[seg] - hand_y[address]) ** 2
+        impact = int(seg[int(np.argmin(d))])
+    else:
+        impact = min(top + 1, last)
     if impact <= top:
         impact = min(top + 1, last)
+
+    # Confidence: a trimmed single swing puts the top in the middle of the clip
+    # with a real backswing and downswing on either side. If the top lands at
+    # the very start/end, or either phase is tiny, the clip is likely untrimmed
+    # or cut off, and the metrics can't be trusted.
+    confident = (n * 0.08 <= top <= n * 0.92) and (top - address) >= 3 and (impact - top) >= 3
 
     return {
         "address": address,
         "top": top,
         "impact": impact,
         "detected_frames": detected,
+        "confident": confident,
     }
 
 
@@ -269,13 +317,12 @@ def compute_metrics(frames, keys, meta, view: str) -> tuple[dict, list]:
     back, down = t - a, im - t
     tempo = back / down if down > 0 else math.nan
 
-    # X-factor: change in shoulder-line angle minus change in hip-line angle
-    # from address to top. A 2D estimate from a single camera.
-    sh_turn = _ang_diff(_line_angle(frames, t, L_SH, R_SH),
-                        _line_angle(frames, a, L_SH, R_SH))
-    hp_turn = _ang_diff(_line_angle(frames, t, L_HIP, R_HIP),
-                        _line_angle(frames, a, L_HIP, R_HIP))
-    x_factor = abs(sh_turn - hp_turn)
+    # X-factor: shoulder rotation minus hip rotation from address to top,
+    # measured about the vertical axis using depth (z) — real 3D rotation, not
+    # a flat image angle that wraps past 180 deg on a big turn.
+    sh_turn = _ang_diff(_rot_y(frames, t, L_SH, R_SH), _rot_y(frames, a, L_SH, R_SH))
+    hp_turn = _ang_diff(_rot_y(frames, t, L_HIP, R_HIP), _rot_y(frames, a, L_HIP, R_HIP))
+    x_factor = abs(_ang_diff(sh_turn, hp_turn))
 
     # Head movement address->impact, normalized to body height.
     nax, nay = _pt(frames, a, NOSE)
