@@ -5,8 +5,18 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "scratchward"
 version = "0.1.0"
-description = "Terminal-first, all-in-one golf coaching tool"
+description = "Terminal-first, all-in-one golf coaching tool — handicap, strokes gained, swing analysis, and a data-driven trainer"
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jozo Cancar" }]
+keywords = ["golf", "strokes-gained", "handicap", "swing-analysis", "cli", "sports-analytics"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Environment :: Console",
+    "Topic :: Games/Entertainment",
+]
 # Core commands need no third-party packages. Video analysis extras:
 dependencies = []
 

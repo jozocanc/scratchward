@@ -1,5 +1,11 @@
 # Scratchward
 
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-green)
+![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux-lightgrey)
+![Spec](https://img.shields.io/badge/spec-complete-brightgreen)
+![Commands](https://img.shields.io/badge/commands-10-blue)
+
 A terminal-first, all-in-one golf coaching tool. Text in, text out — the
 only exception is swing analysis, which writes annotated video/stills to
 disk and prints the path. Everything persists in a local SQLite database
@@ -10,6 +16,26 @@ the long-term picture.
 > (`python -m scratch`). The name lives in one constant — `APP_NAME` in
 > `scratch/constants.py` — which drives the command, the help output, and
 > the data location (`~/.scratch/`). Domain: **scratchward.com**.
+
+## Quickstart
+
+```bash
+git clone git@github.com:jozocanc/scratchward.git
+cd scratchward
+python -m scratch round add --score 88 --rating 71.2 --slope 131
+python -m scratch handicap            # your World Handicap System index
+python -m scratch --help              # all 10 commands
+```
+
+The core needs **no third-party packages** — just Python 3.10+. Only the
+swing analyzer needs extras (`pip install -r requirements.txt`).
+
+## Contents
+
+- [Status](#status) · [Setup](#setup) · [Data location](#data-location)
+- [Commands](#commands) — handicap · strokes gained · practice · swing
+  analyzer · trainer · goal · dispersion · strategy · course
+- [Project layout](#project-layout) · [License](#license)
 
 ## Status
 
@@ -474,3 +500,7 @@ scratchward/             # project root
   pyproject.toml
   README.md
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE). © 2026 Jozo Cancar.
